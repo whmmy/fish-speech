@@ -14,7 +14,7 @@ from fish_speech.utils.schema import ServeTTSRequest, ServeReferenceAudio
 from tools.redisprocess.ret import *
 from tools.server.model_manager import ModelManager
 
-with open('../process_redis.yaml') as f:
+with open('./process_redis.yaml') as f:
     config = yaml.safe_load(f)
 # 初始化 Redis 连接
 redis_client = redis.Redis(
@@ -108,7 +108,9 @@ def process_redis_queue():
         if task:
             ret = JsonRet()
             print(task)
-            task_data = eval(task[1].decode('utf-8'))
+
+            task_data_str = task[1].decode('utf-8')
+            task_dict = json.loads(task_data_str)
             audio_file_url = task_data.get('audioFileUrl')
             audio_text = task_data.get('audioText')
             person_id = task_data.get('personId')
@@ -128,7 +130,7 @@ def process_redis_queue():
             engine = modelManager.tts_inference_engine
             req = ServeTTSRequest(
                 text=content,
-                references=ref,
+                references=[ref],
                 max_new_tokens=1024,
                 chunk_length=200,
                 top_p=0.7,
@@ -159,6 +161,7 @@ def process_redis_queue():
                 ret.set_data({
                     "fileKey": cosClient.get_object_url(bucket, fakeAudioFileName)
                 })
+                putTaskStatus(task_result_key, ret)
         # 将生成文件地址塞入上传文件的队列
 
 
