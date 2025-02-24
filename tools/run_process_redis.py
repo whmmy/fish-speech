@@ -42,7 +42,7 @@ def createEngine() -> ModelManager:
         device='cuda',
         half=True,
         compile=True,
-        asr_enabled=True,
+        asr_enabled=False,
         llama_checkpoint_path="checkpoints/fish-speech-1.5",
         decoder_checkpoint_path="checkpoints/fish-speech-1.5/firefly-gan-vq-fsq-8x1024-21hz-generator.pth",
         decoder_config_name="firefly_gan_vq",
@@ -108,14 +108,15 @@ def process_redis_queue():
         if task:
             ret = JsonRet()
             print(task)
-
+            # 判断是否是json且合法格式
+            
             task_data_str = task[1].decode('utf-8')
             task_dict = json.loads(task_data_str)
-            audio_file_url = task_data.get('audioFileUrl')
-            audio_text = task_data.get('audioText')
-            person_id = task_data.get('personId')
-            taskId = task_data.get('taskId')
-            content = task_data.get('content')
+            audio_file_url = task_dict.get('audioFileUrl')
+            audio_text = task_dict.get('audioText')
+            person_id = task_dict.get('personId')
+            taskId = task_dict.get('taskId')
+            content = task_dict.get('content')
 
             task_result_key = f'TTS:task_result:{taskId}'
             audioBytes = download_file_bytes(audio_file_url)
@@ -140,7 +141,7 @@ def process_redis_queue():
                 use_memory_cache="off",
             )
             audio, errMsg = inference_wrapper(engine, req)
-
+            print(f'推理完成，{len(audio)} 字节的内容,{errMsg}')
             # 推理完成后，更新redis状态
             if audio is None:
                 ret.set_code(ret.RET_FAIL)
@@ -166,11 +167,13 @@ def process_redis_queue():
 
 
 def putTaskStatus(key, ret: JsonRet):
+    print(f'更新redis状态,key:{key},ret:{ret()}')
     redis_client.set(key, ret())
 
 
 def inference_wrapper(engine, request):
     for result in engine.inference(request):
+        print(f'推理结果:{result}')
         match result.code:
             case "final":
                 return result.audio, None
