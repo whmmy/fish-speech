@@ -83,16 +83,15 @@ async def upload_to_cos(local_path, oss_key):
     )
 
 
-async def upload_bytes_to_cos(audioBytes, oss_key):
+def upload_bytes_to_cos(audioBytes, oss_key):
     """
     异步上传文件到 cos
     """
-    response = cosClient.upload_file(
+    response = cosClient.put_object(
         Bucket=bucket,
         Key=oss_key,
         Body=audioBytes,
         EnableMD5=False,
-        progress_callback=None
     )
 
 
@@ -104,7 +103,7 @@ def process_redis_queue():
     print('开始处理redis队列')
     while True:
         # 从redis队列中获取任务
-        task = redis_client.blpop(['video_TTS_task_queue'], timeout=0)
+        task = redis_client.blpop([redis_queue], timeout=0)
         if task:
             ret = JsonRet()
             print(task)
@@ -149,7 +148,7 @@ def process_redis_queue():
                 buffer = io.BytesIO()
                 sf.write(
                     buffer,
-                    audio,
+                    audio_data,
                     sample_rate,
                     format=req.format,
                 )
