@@ -1,14 +1,20 @@
-import struct
-from functools import partial
-import asyncio
+import datetime
+import io
+import urllib.request
+from pathlib import Path
+
 import redis
 import requests
+import soundfile as sf
+import yaml
 from qcloud_cos import CosConfig
 from qcloud_cos import CosS3Client
-from pathlib import Path
-import yaml
 
-with open('process_redis.yaml') as f:
+from fish_speech.utils.schema import ServeTTSRequest, ServeReferenceAudio
+from tools.redisprocess.ret import *
+from tools.server.model_manager import ModelManager
+
+with open('../process_redis.yaml') as f:
     config = yaml.safe_load(f)
 # 初始化 Redis 连接
 redis_client = redis.Redis(
@@ -26,8 +32,21 @@ cosConfig = CosConfig(
     SecretId=config['cos']['secret_id'],
     SecretKey=config['cos']['secret_key']
 )
-client = CosS3Client(cosConfig)
+cosClient = CosS3Client(cosConfig)
 redis_queue = 'voiceTTSTaskQueue'
+
+
+def createEngine() -> ModelManager:
+    return ModelManager(
+        mode="tts",
+        device='cuda',
+        half=True,
+        compile=True,
+        asr_enabled=True,
+        llama_checkpoint_path="checkpoints/fish-speech-1.5",
+        decoder_checkpoint_path="checkpoints/fish-speech-1.5/firefly-gan-vq-fsq-8x1024-21hz-generator.pth",
+        decoder_config_name="firefly_gan_vq",
+    )
 
 
 async def download_file(url, local_path):
@@ -40,11 +59,22 @@ async def download_file(url, local_path):
     return local_path
 
 
+def download_file_bytes(url):
+    try:
+        # 打开 URL 并获取响应
+        with urllib.request.urlopen(url) as response:
+            # 读取响应内容，返回的是 bytes 类型
+            return response.read()
+    except Exception as e:
+        print(f"获取 URL 内容时出现错误: {e}")
+        return None
+
+
 async def upload_to_cos(local_path, oss_key):
     """
     异步上传文件到 cos
     """
-    response = client.upload_file(
+    response = cosClient.upload_file(
         Bucket=bucket,
         Key=oss_key,
         LocalFilePath=local_path,
@@ -53,40 +83,98 @@ async def upload_to_cos(local_path, oss_key):
     )
 
 
+async def upload_bytes_to_cos(audioBytes, oss_key):
+    """
+    异步上传文件到 cos
+    """
+    response = cosClient.upload_file(
+        Bucket=bucket,
+        Key=oss_key,
+        Body=audioBytes,
+        EnableMD5=False,
+        progress_callback=None
+    )
+
+
 def process_redis_queue():
+    modelManager = createEngine()
     """
     处理 redis 队列
     """
     print('开始处理redis队列')
     while True:
         # 从redis队列中获取任务
-        task = redis_client.blpop('video_TTS_task_queue', timeout=0)
+        task = redis_client.blpop(['video_TTS_task_queue'], timeout=0)
         if task:
+            ret = JsonRet()
             print(task)
             task_data = eval(task[1].decode('utf-8'))
             audio_file_url = task_data.get('audioFileUrl')
             audio_text = task_data.get('audioText')
             person_id = task_data.get('personId')
+            taskId = task_data.get('taskId')
             content = task_data.get('content')
 
-            ref_folder = Path("references") / str(person_id)
-            ref_folder.mkdir(parents=True, exist_ok=True)
-
-            local_file_path = ref_folder / Path(audio_file_url).name
-            if not local_file_path.exists() or local_file_path.stat().st_size == 0:
-                # 下载文件
-                response = requests.get(audio_file_url)
-                with open(local_file_path, 'wb') as f:
-                    f.write(response.content)
-            print('文件下载完成')
+            task_result_key = f'TTS:task_result:{taskId}'
+            audioBytes = download_file_bytes(audio_file_url)
+            if audioBytes is None:
+                ret.set_code(ret.RET_FAIL)
+                ret.set_msg(f'文件不存在，或者下载错误,url:{audio_file_url}')
+                putTaskStatus(task_result_key, ret)
+                continue
+            print(f'文件获取完成，{len(audioBytes)} 字节的内容')
+            ref = ServeReferenceAudio(audio=audioBytes, text=audio_text)
             # 进行语音推理
-            # new_audio_path = speech_inference(str(local_file_path), audio_text, person_id, content)
+            engine = modelManager.tts_inference_engine
+            req = ServeTTSRequest(
+                text=content,
+                references=ref,
+                max_new_tokens=1024,
+                chunk_length=200,
+                top_p=0.7,
+                repetition_penalty=1.2,
+                temperature=0.7,
+                seed=None,
+                use_memory_cache="off",
+            )
+            audio, errMsg = inference_wrapper(engine, req)
 
             # 推理完成后，更新redis状态
-            # task_status_key = f"task_status:{person_id}"
-            # redis_client.set(task_status_key, "completed")
-            # 将生成文件地址塞入上传文件的队列
-            # redis_client.rpush('upload_queue', new_audio_path)
+            if audio is None:
+                ret.set_code(ret.RET_FAIL)
+                ret.set_msg(errMsg)
+                putTaskStatus(task_result_key, ret)
+            else:
+                sample_rate, audio_data = audio
+                buffer = io.BytesIO()
+                sf.write(
+                    buffer,
+                    audio,
+                    sample_rate,
+                    format=req.format,
+                )
+                fakeAudioFileName = generate_filename(person_id, taskId, req.format)
+                upload_bytes_to_cos(buffer, fakeAudioFileName)
+                ret.set_code(ret.RET_OK)
+                ret.set_data({
+                    "fileKey": cosClient.get_object_url(bucket, fakeAudioFileName)
+                })
+        # 将生成文件地址塞入上传文件的队列
+
+
+def putTaskStatus(key, ret: JsonRet):
+    redis_client.set(key, ret())
+
+
+def inference_wrapper(engine, request):
+    for result in engine.inference(request):
+        match result.code:
+            case "final":
+                return result.audio, None
+            case "error":
+                return None, result.error
+            case _:
+                pass
 
 
 # 功能2：通过上传文件的队列，获取文件地址并上传
@@ -104,6 +192,21 @@ def process_upload_queue():
             person_id = Path(file_path).stem.split('_')[-1]
             task_status_key = f"task_status:{person_id}"
             r.set(task_status_key, "uploaded")
+
+
+def generate_filename(person_id, taskId, file_format):
+    """
+   生成包含时间、person_id、taskId和文件格式的随机文件名
+   :param person_id: 人员ID
+   :param taskId: 任务ID
+   :param file_format: 文件格式，如 'jpg', 'png', 'pdf' 等
+   :return: 生成的随机文件名
+   """
+    # 获取当前时间并格式化为字符串，只保留到分钟
+    current_time = datetime.datetime.now().strftime("%Y%m%d%H%M")
+    # 组合时间、person_id、taskId和文件格式生成文件名
+    filename = f"/TTS/TASK_RESULT/{current_time}_{person_id}_{taskId}.{file_format}"
+    return filename
 
 
 if __name__ == "__main__":
