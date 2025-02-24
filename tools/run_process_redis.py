@@ -87,6 +87,7 @@ def upload_bytes_to_cos(audioBytes, oss_key):
     """
     异步上传文件到 cos
     """
+    audioBytes.seek(0)
     response = cosClient.put_object(
         Bucket=bucket,
         Key=oss_key,
