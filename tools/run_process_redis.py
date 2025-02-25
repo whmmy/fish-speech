@@ -33,7 +33,7 @@ cosConfig = CosConfig(
     SecretKey=config['cos']['secret_key']
 )
 cosClient = CosS3Client(cosConfig)
-redis_queue = 'voiceTTSTaskQueue'
+redis_queue = 'TTS:TaskQueue'
 
 
 def createEngine() -> ModelManager:
