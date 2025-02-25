@@ -1,0 +1,13 @@
+[Unit]
+Description=TTS Redis Queue Processing Service
+After=network.target
+
+[Service]
+ExecStart=python /workspace/fish-speech/run_process_redis.py
+WorkingDirectory=/workspace/fish-speech
+Restart=always
+User=whmmy
+Group=whmmy_fun
+
+[Install]
+WantedBy=multi-user.target
