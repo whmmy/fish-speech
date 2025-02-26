@@ -217,7 +217,7 @@ def putTaskResult(code, msg, taskId, fileUrl=None):
         'taskId': taskId,
         'fileUrl': fileUrl
     }
-    redis_client.rpush('VVS:TASK_RESULT_QUEUE', json.dumps(data))
+    redis_client.rpush('VVS:GPU_TASK_RESULT_QUEUE', json.dumps(data))
 
 
 def inference_wrapper(engine, request):
