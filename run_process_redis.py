@@ -131,22 +131,22 @@ def process_redis_queue():
     modelManager = createEngine()
     logging.info('开始处理redis队列')
     while True:
-        try:
-            # 从redis队列中获取任务
-            task = redis_client.blpop([redis_queue], timeout=0)
-            if task:
-                ret = JsonRet()
-                task_data_str = task[1].decode('utf-8')
-                try:
-                    task_dict = json.loads(task_data_str)
-                except json.JSONDecodeError:
-                    logging.error(f"解析任务数据时出错: {task_data_str}")
-                    continue
-                audio_file_url = task_dict.get('audioFileUrl')
-                audio_text = task_dict.get('audioText')
-                person_id = task_dict.get('personId')
-                taskId = task_dict.get('taskId')
-                content = task_dict.get('content')
+        # 从redis队列中获取任务
+        task = redis_client.blpop([redis_queue], timeout=0)
+        if task:
+            ret = JsonRet()
+            task_data_str = task[1].decode('utf-8')
+            try:
+                task_dict = json.loads(task_data_str)
+            except json.JSONDecodeError:
+                logging.error(f"解析任务数据时出错: {task_data_str}")
+                continue
+            audio_file_url = task_dict.get('audioFileUrl')
+            audio_text = task_dict.get('audioText')
+            person_id = task_dict.get('personId')
+            taskId = task_dict.get('taskId')
+            content = task_dict.get('content')
+            try:
 
                 task_result_key = f'TTS:task_result:{taskId}'
                 audioBytes = download_file_bytes(audio_file_url)
@@ -154,6 +154,7 @@ def process_redis_queue():
                     ret.set_code(ret.RET_FAIL)
                     ret.set_msg(f'文件不存在，或者下载错误,url:{audio_file_url}')
                     putTaskStatus(task_result_key, ret)
+                    putTaskResult(1, f'文件不存在，或者下载错误,url:{audio_file_url}', taskId)
                     continue
                 logging.info(f'文件获取完成，{len(audioBytes)} 字节的内容')
                 ref = ServeReferenceAudio(audio=audioBytes, text=audio_text)
@@ -177,6 +178,7 @@ def process_redis_queue():
                     ret.set_code(ret.RET_FAIL)
                     ret.set_msg(errMsg)
                     putTaskStatus(task_result_key, ret)
+                    putTaskResult(1, errMsg, taskId)
                 else:
                     sample_rate, audio_data = audio
                     buffer = io.BytesIO()
@@ -192,17 +194,30 @@ def process_redis_queue():
                         ret.set_data({
                             "fileKey": cosClient.get_object_url(bucket, fakeAudioFileName)
                         })
+                        putTaskResult(0, 'success', taskId, cosClient.get_object_url(bucket, fakeAudioFileName))
                     else:
                         ret.set_code(ret.RET_FAIL)
                         ret.set_msg(f"上传文件 {fakeAudioFileName} 到 COS 失败")
+                        putTaskResult(1, f"上传文件 {fakeAudioFileName} 到 COS 失败", taskId)
                     putTaskStatus(task_result_key, ret)
-        except Exception as e:
-            logging.error(f"处理 Redis 队列任务时出错: {e}")
+            except Exception as e:
+                logging.error(f"处理 Redis 队列任务时出错: {e}")
+                putTaskResult(1, f"处理 Redis 队列任务时出错: {e}", taskId)
 
 
 def putTaskStatus(key: str, ret: JsonRet):
     logging.info(f'更新redis状态,key:{key},ret:{ret()}')
     redis_client.set(key, ret())
+
+
+def putTaskResult(code, msg, taskId, fileUrl=None):
+    data = {
+        'code': code,
+        'msg': msg,
+        'taskId': taskId,
+        'fileUrl': fileUrl
+    }
+    redis_client.rpush('VVS:TASK_RESULT_QUEUE', json.dumps(data))
 
 
 def inference_wrapper(engine, request):
