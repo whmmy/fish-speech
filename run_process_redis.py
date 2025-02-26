@@ -73,7 +73,7 @@ processConfig = load_config('./process_redis.yaml')
 redis_client = init_redis_client(processConfig)
 # 初始化 OSS 客户端
 cosClient, bucket = init_cos_client(processConfig)
-redis_queue = 'TTS:TaskQueue'
+redis_queue = 'VVS:TTS:TaskQueue'
 
 
 def createEngine() -> ModelManager:
