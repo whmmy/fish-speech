@@ -11,7 +11,6 @@ from qcloud_cos import CosConfig
 from qcloud_cos import CosS3Client
 
 from fish_speech.utils.schema import ServeTTSRequest, ServeReferenceAudio
-from tools.redisprocess.ret import *
 from tools.server.model_manager import ModelManager
 
 # 配置日志
@@ -134,7 +133,6 @@ def process_redis_queue():
         # 从redis队列中获取任务
         task = redis_client.blpop([redis_queue], timeout=0)
         if task:
-            ret = JsonRet()
             task_data_str = task[1].decode('utf-8')
             try:
                 task_dict = json.loads(task_data_str)
@@ -147,13 +145,9 @@ def process_redis_queue():
             taskId = task_dict.get('taskId')
             content = task_dict.get('content')
             try:
-
-                task_result_key = f'TTS:task_result:{taskId}'
+                putTaskResult(100, f'任务执行', taskId)
                 audioBytes = download_file_bytes(audio_file_url)
                 if audioBytes is None:
-                    ret.set_code(ret.RET_FAIL)
-                    ret.set_msg(f'文件不存在，或者下载错误,url:{audio_file_url}')
-                    putTaskStatus(task_result_key, ret)
                     putTaskResult(1, f'文件不存在，或者下载错误,url:{audio_file_url}', taskId)
                     continue
                 logging.info(f'文件获取完成，{len(audioBytes)} 字节的内容')
@@ -175,9 +169,6 @@ def process_redis_queue():
                 logging.info(f'推理完成，{len(audio)} 字节的内容,{errMsg}')
                 # 推理完成后，更新redis状态
                 if audio is None:
-                    ret.set_code(ret.RET_FAIL)
-                    ret.set_msg(errMsg)
-                    putTaskStatus(task_result_key, ret)
                     putTaskResult(1, errMsg, taskId)
                 else:
                     sample_rate, audio_data = audio
@@ -190,24 +181,12 @@ def process_redis_queue():
                     )
                     fakeAudioFileName = generate_filename(person_id, taskId, req.format)
                     if upload_bytes_to_cos(buffer, fakeAudioFileName):
-                        ret.set_code(ret.RET_OK)
-                        ret.set_data({
-                            "fileKey": cosClient.get_object_url(bucket, fakeAudioFileName)
-                        })
                         putTaskResult(0, 'success', taskId, cosClient.get_object_url(bucket, fakeAudioFileName))
                     else:
-                        ret.set_code(ret.RET_FAIL)
-                        ret.set_msg(f"上传文件 {fakeAudioFileName} 到 COS 失败")
                         putTaskResult(1, f"上传文件 {fakeAudioFileName} 到 COS 失败", taskId)
-                    putTaskStatus(task_result_key, ret)
             except Exception as e:
                 logging.error(f"处理 Redis 队列任务时出错: {e}")
                 putTaskResult(1, f"处理 Redis 队列任务时出错: {e}", taskId)
-
-
-def putTaskStatus(key: str, ret: JsonRet):
-    logging.info(f'更新redis状态,key:{key},ret:{ret()}')
-    redis_client.set(key, ret())
 
 
 def putTaskResult(code, msg, taskId, fileUrl=None):
