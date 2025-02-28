@@ -15,7 +15,7 @@ from fish_speech.utils.schema import ServeTTSRequest, ServeReferenceAudio
 from tools.server.model_manager import ModelManager
 
 # 配置日志
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO,filename='./logs/app.log', format='%(asctime)s - %(levelname)s - %(message)s')
 
 
 def load_config(file_path: str):
