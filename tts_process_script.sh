@@ -24,7 +24,7 @@ case "$1" in
     start)
         echo "Starting $NAME"
         cd $WORKING_DIR
-        $DAEMON $SCRIPT &
+        nohup $DAEMON $SCRIPT > /tmp/$NAME.log 2>&1 &
         echo $! > $PIDFILE
         ;;
     stop)
